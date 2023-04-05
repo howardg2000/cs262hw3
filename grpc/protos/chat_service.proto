@@ -1,0 +1,68 @@
+syntax = 'proto3';
+
+package chatservice;
+
+service ChatService {
+    rpc CreateAccount(CreateAccountRequest) returns (CreateAccountResponse) {}
+    rpc ListAccounts(ListAccountsRequest) returns (ListAccountsResponse) {}
+    rpc SendMessage(SendMessageRequest) returns (SendMessageResponse) {}
+    rpc DeleteAccount(DeleteAccountRequest) returns (DeleteAccountResponse) {}
+    rpc LogIn(LogInRequest) returns (LogInResponse) {}
+    rpc LogOff(LogOffRequest) returns (LogOffResponse) {}
+    rpc GetMessages(GetMessagesRequest) returns (stream ChatMessage) {}
+}
+
+message CreateAccountRequest {
+    string username = 1;
+}
+
+message CreateAccountResponse {
+    string status = 1;
+    string username = 2;
+}
+
+message ListAccountsRequest {
+    string query = 1;
+}
+
+message ListAccountsResponse {
+    string status = 1;
+    repeated string accounts = 2;
+}
+
+message SendMessageRequest {
+    string recipient = 1;
+    string message = 2;
+}
+
+message SendMessageResponse {
+    string status = 1;
+}
+
+message DeleteAccountRequest {}
+
+message DeleteAccountResponse {
+    string status = 1;
+}
+
+message LogInRequest {
+    string username = 1;
+}
+
+message LogInResponse {
+    string status = 1;
+    string username = 2;
+}
+
+message LogOffRequest {}
+
+message LogOffResponse {
+    string status = 1;
+}
+
+message GetMessagesRequest {}
+
+message ChatMessage {
+    string sender = 1;
+    string message = 2;
+}
