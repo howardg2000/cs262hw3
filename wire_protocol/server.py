@@ -8,9 +8,11 @@ import logging
 
 
 class Server:
-    def __init__(self, host, port, protocol):
+    def __init__(self, host, port, protocol, other_servers, server_id):
         self.host = host
         self.port = port
+        self.other_servers = other_servers
+        self.server_id = server_id
 
         self.msg_counter = 0
 
@@ -29,6 +31,18 @@ class Server:
     def disconnect(self):
         self.socket.close()
 
+    def handle_connection(self, client_socket, socket_lock):
+        """Function to handle a client on a single thread, which continuously reads the socket and processes the messages
+
+        Args:
+            client (socket.socket): The socket to read from.
+            socket_lock (threading.Lock): Lock to prevent concurrent socket read
+        """
+        if self.is_primary:
+            self.handle_client(client_socket, socket_lock)
+        else:
+            self.handle_primary(client_socket, socket_lock)
+
     def handle_client(self, client, socket_lock):
         """Function to handle a client on a single thread, which continuously reads the socket and processes the messages
 
@@ -36,6 +50,26 @@ class Server:
             client (socket.socket): The socket to read from.
             socket_lock (threading.Lock): Lock to prevent concurrent socket read
         """
+        value = self.protocol.read_packets(
+            client, self.process_operation_curried(socket_lock))
+        if value is None:
+            client.close()
+        self.logged_in_lock.acquire()
+        username = [k for k, v in self.logged_in.items() if v == (
+            client, socket_lock)]
+        if len(username) > 0:
+            self.logged_in.pop(username[0])
+        self.logged_in_lock.release()
+        print("Closing client.")
+
+    def handle_primary(self, client, socket_lock):
+        """Function for replica server to handle primary requests.
+
+        Args:
+            client (socket.socket): The socket to read from.
+            socket_lock (threading.Lock): Lock to prevent concurrent socket read
+        """
+        # TODO: update process_operation_curried to handle the update messages from the primary
         value = self.protocol.read_packets(
             client, self.process_operation_curried(socket_lock))
         if value is None:
@@ -83,7 +117,9 @@ class Server:
         """
         ret = True
         self.account_list_lock.acquire()
-        ret = recipient in self.account_list
+        with open(f"logs/account_list.log", "r") as file:
+            account_list = file.read()
+            ret = recipient in account_list
         self.account_list_lock.release()
         return ret
 
@@ -330,9 +366,6 @@ class Server:
             sleep(0.01)
 
     def run(self):
-        """ Runs the server by starting the message delivery thread. It then
-        accepts any connections and spawns a new thread to handle the connection
-        """
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket = server_socket
         server_socket.setblocking(0)
@@ -340,19 +373,49 @@ class Server:
         print("Server started.")
         server_socket.listen()
 
-        message_delivery_thread = threading.Thread(
-            target=self.send_messages, daemon=True)
-        message_delivery_thread.start()
+        # Need to determine the order in which this happens, because it should connect to all other servers before getting any client connections
+        self._connect_to_other_servers()
+
+        if self.is_primary:
+            message_delivery_thread = threading.Thread(
+                target=self.send_messages, daemon=True)
+            message_delivery_thread.start()
         while(True):
             try:
                 clientsocket, addr = server_socket.accept()
                 clientsocket.setblocking(1)
                 lock = threading.Lock()
                 thread = threading.Thread(
-                    target=self.handle_client, args=(clientsocket, lock, ), daemon=True)
+                    target=self.handle_connection, args=(clientsocket, lock, ), daemon=True)
                 thread.start()
                 print('Connection created with:', addr)
             except BlockingIOError:
                 pass
             finally:
                 self.handle_undelivered_messages()
+
+    def _connect_to_other_servers(self):
+        """Connects to the primary server and other servers in the system.
+        """
+        other_server_sockets = []
+        for host, port in self.other_servers:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.connect((host, int(port)))
+            other_server_sockets.append(s)
+            print("Server connection success to port val:" +
+                  str(port) + "\n")
+        self.other_server_sockets = other_server_sockets
+
+        # Need code for determining which is primary server, simple scheme is send id to all servers
+        # and the one with the lowest id is primary. This can also be used if the primary goes down,
+        # so all servers know who the new primary is.
+        self.determine_primary_server()
+
+    def determine_primary_server(self):
+        # Send id to all servers and the one with the lowest id is primary
+        # Check to make sure this doesn't deadlock
+        for server_socket in self.other_server_sockets:
+            self.protocol.send(server_socket, self.protocol.encode(
+                "INIT_ID_REQUEST", self.msg_counter, {"id": self.id}))
+
+        self.is_primary = self.id < min(self.other_server_ids)
