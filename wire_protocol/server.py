@@ -7,6 +7,150 @@ import re
 import logging
 
 
+class LoggedInAccounts:
+    def __init__(self, filename):
+        self.filename = filename
+        self.logged_in = {}  # Map of username to (client_socket, socket lock)
+        self.lock = threading.Lock()
+
+    def atomic_login(self, username, client_socket, addr, socket_lock):
+        self.lock.acquire()
+        self.logged_in[username] = (client_socket, socket_lock)
+        with open(self.filename, "a") as f:
+            # File only contain the address of the client because this is all we need to reconnec to client.
+            # The primary server should populate the logged_in dict with the socket object and lock
+            # while keeping the file consistent with the dict. Replicas should only keep the file consistent
+            # and populate the dict if they become the primary server.
+            # Each addr corresponds to a unique client_socket object
+            f.write(f"{username} {addr[0]} {addr[1]}")
+        self.lock.release()
+
+    def atomic_is_logged_in(self, client_socket, socket_lock):
+        self.lock.acquire()
+        is_logged_in = (client_socket, socket_lock) in self.logged_in.values()
+        self.lock.release()
+        return is_logged_in
+
+    def username_is_logged_in(self, username):
+        self.lock.acquire()
+        is_logged_in = username in self.logged_in.keys()
+        self.lock.release()
+        return is_logged_in
+
+    def atomic_logoff(self, client_socket, socket_lock):
+        self.lock.acquire()
+        if (client_socket, socket_lock) in self.logged_in.values():
+            username = [k for k, v in self.logged_in.items() if v == (
+                client_socket, socket_lock)][0]
+            self.logged_in.pop(username)
+
+            # Remove the username entry from the file
+            with open(self.filename, 'r') as f:
+                lines = f.readlines()
+            with open(self.filename, 'w') as f:
+                for line in lines:
+                    if line.strip().split()[0] != username:
+                        f.write(line)
+
+            self.logged_in_lock.release()
+            return username
+        self.logged_in_lock.release()
+        return False
+
+    def get_username(self, client_socket, socket_lock):
+        self.lock.acquire()
+        username = [k for k, v in self.logged_in.items() if v == (
+            client_socket, socket_lock)][0]
+        self.lock.release()
+        return username
+
+
+class AccountList:
+    def __init__(self, filename, logged_in_accounts: LoggedInAccounts):
+        self.filename = filename
+        self.lock = threading.Lock()
+        self.logged_in_accounts = logged_in_accounts
+
+    def atomic_create_account(self, username, client_socket, addr, socket_lock):
+        self.lock.acquire()
+        with open(self.filename, 'a') as f:
+            f.write(username)
+        self.logged_in_accounts.atomic_login(
+            username, client_socket, addr, socket_lock)  # accountLock > login
+        # if we release the lock earlier, someone else can create the same acccount and try to log in while we wait for the log in lock
+        self.lock.release()
+
+    def atomic_remove(self, username):
+        self.lock.acquire()
+        with open(self.filename, 'r') as f:
+            lines = f.readlines()
+        with open(self.filename, 'w') as f:
+            for line in lines:
+                if line.strip() != username:
+                    f.write(line)
+        self.lock.release()
+
+    def atomic_contains(self, username):
+        self.lock.acquire()
+        with open(self.filename, 'r') as f:
+            lines = f.readlines()
+        for line in lines:
+            if line.strip() == username:
+                return True
+        self.lock.release()
+        return False
+
+    def search_accounts(self, query):
+        pattern = re.compile(
+            fr"{query}", flags=re.IGNORECASE)
+        self.lock.acquire()
+        result = []
+        with open(self.filename, 'r') as f:
+            lines = f.readlines()
+        for line in lines:
+            account = line.strip()
+            if pattern.match(account):
+                result.append(account)
+        self.lock.release()
+        return result
+
+
+class UndeliveredMessages:
+    def __init__(self, filename):
+        self.filename = filename
+        self.lock = threading.Lock()
+
+    def add_message(self, recipient, sender, message):
+        self.lock.acquire()
+        with open(self.filename, 'a') as f:
+            f.write(f"{recipient} {sender} {message}")
+        self.lock.release()
+
+    def get_messages(self, recipient):
+        # Get all outsanding messages for a recipient. Read operation.
+        self.lock.acquire()
+        messages = []
+        with open(self.filename, 'r') as f:
+            lines = f.readlines()
+        for line in lines:
+            msg_recipient, sender, message = line.strip().split(' ', 2)
+            if msg_recipient == recipient:
+                messages.append(message)
+        self.lock.release()
+        return messages
+
+    def remove_message(self, recipient, sender, message):
+        # Remove message from file once it has been delivered. Update operation.
+        self.lock.acquire()
+        with open(self.filename, 'r') as f:
+            lines = f.readlines()
+        with open(self.filename, 'w') as f:
+            for line in lines:
+                if line.strip() != f'{recipient} {sender} {message}':
+                    f.write(line)
+        self.lock.release()
+
+
 class Server:
     def __init__(self, host, port, protocol, other_servers, server_id):
         self.host = host
@@ -16,22 +160,22 @@ class Server:
 
         self.msg_counter = 0
 
-        self.account_list = []  # List of usernames
-        self.account_list_lock = threading.Lock()
+        self.logged_in_file = "logs/logged_in.log"
+        self.logged_in = LoggedInAccounts(self.logged_in_file)
 
-        self.logged_in = {}  # Map of username to (client_socket, socket lock)
-        self.logged_in_lock = threading.Lock()
+        self.account_list_file = "logs/account_list.log"
+        self.account_list = AccountList(self.account_list_file, self.logged_in)
 
         # Map of recipient username to list of (sender, message) for that recipient
-        self.undelivered_msg = {}
-        self.undelivered_msg_lock = threading.Lock()
+        self.undelivered_msgs_file = "logs/undelivered_msgs.log"
+        self.undelivered_msgs = UndeliveredMessages(self.undelivered_msgs_file)
 
         self.protocol = protocol
 
     def disconnect(self):
         self.socket.close()
 
-    def handle_connection(self, client_socket, socket_lock):
+    def handle_connection(self, client_socket, addr, socket_lock):
         """Function to handle a client on a single thread, which continuously reads the socket and processes the messages
 
         Args:
@@ -39,11 +183,11 @@ class Server:
             socket_lock (threading.Lock): Lock to prevent concurrent socket read
         """
         if self.is_primary:
-            self.handle_client(client_socket, socket_lock)
+            self.handle_client(client_socket, addr, socket_lock)
         else:
-            self.handle_primary(client_socket, socket_lock)
+            self.handle_primary(client_socket, addr, socket_lock)
 
-    def handle_client(self, client, socket_lock):
+    def handle_client(self, client, addr, socket_lock):
         """Function to handle a client on a single thread, which continuously reads the socket and processes the messages
 
         Args:
@@ -51,7 +195,7 @@ class Server:
             socket_lock (threading.Lock): Lock to prevent concurrent socket read
         """
         value = self.protocol.read_packets(
-            client, self.process_operation_curried(socket_lock))
+            client, self.process_operation_curried(socket_lock, addr))
         if value is None:
             client.close()
         self.logged_in_lock.acquire()
@@ -62,7 +206,7 @@ class Server:
         self.logged_in_lock.release()
         print("Closing client.")
 
-    def handle_primary(self, client, socket_lock):
+    def handle_primary(self, client, addr, socket_lock):
         """Function for replica server to handle primary requests.
 
         Args:
@@ -70,8 +214,9 @@ class Server:
             socket_lock (threading.Lock): Lock to prevent concurrent socket read
         """
         # TODO: update process_operation_curried to handle the update messages from the primary
+        raise NotImplementedError
         value = self.protocol.read_packets(
-            client, self.process_operation_curried(socket_lock))
+            client, self.process_operation_curried(socket_lock, addr))
         if value is None:
             client.close()
         self.logged_in_lock.acquire()
@@ -83,20 +228,15 @@ class Server:
         print("Closing client.")
 
     def atomicIsLoggedIn(self, client_socket, socket_lock):
-        """Atomically checks if the client is logged in 
+        """Atomically checks if the client is logged in
 
         Args:
             client (socket.socket): The client socket
             socket_lock (threading.Lock): The socket's associated lock
         """
-        ret = True
-        self.logged_in_lock.acquire()
-        if (client_socket, socket_lock) not in self.logged_in.values():
-            ret = False
-        self.logged_in_lock.release()
-        return ret
+        return self.logged_in.atomic_is_logged_in(client_socket, socket_lock)
 
-    def atomicLogIn(self, client_socket, socket_lock, account_name):
+    def atomicLogIn(self, client_socket, addr, socket_lock, account_name):
         """Atomically logs client in with the account name
 
         Args:
@@ -104,10 +244,8 @@ class Server:
             socket_lock (threading.Lock): The socket's associated lock
             account_name (str): The account name to log in
         """
-        self.logged_in_lock.acquire()
-        self.logged_in[account_name] = (
-            client_socket, socket_lock)
-        self.logged_in_lock.release()
+        self.logged_in.atomic_login(
+            account_name, client_socket, addr, socket_lock)
 
     def atomicIsAccountCreated(self, recipient):
         """Atomically checks if an account is created
@@ -115,16 +253,10 @@ class Server:
         Args:
             recipient (str): The account name to check
         """
-        ret = True
-        self.account_list_lock.acquire()
-        with open(f"logs/account_list.log", "r") as file:
-            account_list = file.read()
-            ret = recipient in account_list
-        self.account_list_lock.release()
-        return ret
+        return self.account_list.atomic_contains(recipient)
 
-    def process_create_account(self, args, client_socket, socket_lock):
-        """Processes a create account request. We require that the requester is not 
+    def process_create_account(self, args, client_socket, addr, socket_lock):
+        """Processes a create account request. We require that the requester is not
         logged in and that the account doesn't exist
 
         Args:
@@ -137,17 +269,12 @@ class Server:
             response = {
                 'status': 'Error: User can\'t create an account while logged in.', 'username': account_name}
         else:
-            self.account_list_lock.acquire()
-            if (account_name in self.account_list):
-                self.account_list_lock.release()
+            if self.atomicIsAccountCreated(account_name):
                 response = {
                     'status': 'Error: Account already exists.', 'username': account_name}
             else:
-                self.account_list.append(account_name)
-                self.atomicLogIn(client_socket, socket_lock,
-                                 account_name)  # accountLock > login
-                # if we release the lock earlier, someone else can create the same acccount and try to log in while we wait for the log in lock
-                self.account_list_lock.release()
+                self.account_list.atomic_create_account(
+                    account_name, client_socket, addr, socket_lock)
                 print("Account created: " + account_name)
                 response = {'status': 'Success', 'username': account_name}
         return response
@@ -160,14 +287,7 @@ class Server:
         """
         logging.info('Received', time.time())
         try:
-            pattern = re.compile(
-                fr"{args['query']}", flags=re.IGNORECASE)
-            self.account_list_lock.acquire()
-            result = []
-            for account in self.account_list:
-                if pattern.match(account):
-                    result.append(account)
-            self.account_list_lock.release()
+            result = self.account_list.search_accounts(args["query"])
             response = {'status': 'Success', 'accounts': ";".join(result)}
         except:
             response = {'status': 'Error: regex is malformed.', 'accounts': ''}
@@ -175,7 +295,7 @@ class Server:
             return response
 
     def process_send_msg(self, args, client_socket, socket_lock):
-        """Processes a send message request. We require that the requester is 
+        """Processes a send message request. We require that the requester is
         logged in and the recipient exists.
 
         Args:
@@ -183,63 +303,42 @@ class Server:
             client (socket.socket): The client socket
             socket_lock (threading.Lock): The socket's associated lock
         """
-        self.logged_in_lock.acquire()
-        if (not (client_socket, socket_lock) in self.logged_in.values()):
-            self.logged_in_lock.release()
+        if not self.logged_in.atomic_is_logged_in(client_socket, socket_lock):
             response = {
                 'status': 'Error: Need to be logged in to send a message.'}
         else:
-            username = [k for k, v in self.logged_in.items() if v == (
-                client_socket, socket_lock)][0]
-            self.logged_in_lock.release()
+            username = self.logged_in.get_username(client_socket, socket_lock)
             recipient = args["recipient"]
             message = args["message"]
             print("sending message", recipient, message)
-            self.account_list_lock.acquire()
-            if recipient not in self.account_list:
-                self.account_list_lock.release()
+            if not self.account_list.atomic_contains(recipient):
                 response = {
                     'status': 'Error: The recipient of the message does not exist.'}
             else:
-                self.undelivered_msg_lock.acquire()
-                if recipient in self.undelivered_msg:
-                    self.undelivered_msg[recipient] += [
-                        (username, message)]
-                else:
-                    self.undelivered_msg[recipient] = [
-                        (username, message)]
-                self.undelivered_msg_lock.release()
-                self.account_list_lock.release()
+                self.undelivered_msgs.add_message(recipient, username, message)
                 response = {'status': 'Success'}
         return response
 
     def process_delete_account(self, client_socket, socket_lock):
-        """Processes a delete account request. We require that the requester is 
+        """Processes a delete account request. We require that the requester is
         logged in.
 
         Args:
             client (socket.socket): The client socket
             socket_lock (threading.Lock): The socket's associated lock
         """
-        self.logged_in_lock.acquire()
-
-        if ((client_socket, socket_lock) in self.logged_in.values()):
-            username = [k for k, v in self.logged_in.items() if v == (
-                client_socket, socket_lock)][0]
-            self.logged_in.pop(username)
-            self.logged_in_lock.release()
-            self.account_list_lock.acquire()
-            self.account_list.remove(username)
-            self.account_list_lock.release()
-            response = {'status': 'Success'}
-        else:
-            self.logged_in_lock.release()
+        username = self.logged_in.atomic_logoff(client_socket, socket_lock)
+        if not username:
             response = {
                 'status': 'Error: Need to be logged in to delete your account.'}
+        else:
+            self.account_list.atomic_remove(username)
+            response = {'status': 'Success'}
+
         return response
 
-    def process_login(self, args, client_socket, socket_lock):
-        """Processes a login request. We require that the requester is 
+    def process_login(self, args, client_socket, addr, socket_lock):
+        """Processes a login request. We require that the requester is
         not logged in, the account exists, and no one else is logged into the account.
 
         Args:
@@ -247,50 +346,43 @@ class Server:
             client (socket.socket): The client socket
             socket_lock (threading.Lock): The socket's associated lock
         """
-        self.logged_in_lock.acquire()
-        if ((client_socket, socket_lock) in self.logged_in.values()):
-            self.logged_in_lock.release()
+        # TODO: This seems to raise some race conditions because I got rid of the locks and moved them
+        # into the account list and logged in classes. To fix, we can just move those locks back out
+        # into this server class like before, and use the locks to protect any operations on the
+        # account and logged in classes.
+        if self.atomicIsLoggedIn(client_socket, socket_lock):
             response = {
                 'status': 'Error: Already logged into an account, please log off first.', 'username': ''}
         else:
             account_name = args['username']
-            if (not self.atomicIsAccountCreated(account_name)):
-                self.logged_in_lock.release()
+            if not self.atomicIsAccountCreated(account_name):
                 response = {
                     'status': 'Error: Account does not exist.', 'username': account_name}
-            elif (account_name in self.logged_in.keys()):
-                self.logged_in_lock.release()
+            elif self.logged_in.username_is_logged_in(account_name):
                 response = {
                     'status': 'Error: Someone else is logged into that account.', 'username': account_name}
             else:
-                self.logged_in[account_name] = (
-                    client_socket, socket_lock)
-                self.logged_in_lock.release()
+                self.atomicLogIn(client_socket, account_name,
+                                 addr, socket_lock)
                 response = {'status': 'Success', 'username': account_name}
         return response
 
     def process_logoff(self, client_socket, socket_lock):
-        """Processes a logoff request. We require that the requester is 
+        """Processes a logoff request. We require that the requester is
         logged in.
 
         Args:
             client (socket.socket): The client socket
             socket_lock (threading.Lock): The socket's associated lock
         """
-        self.logged_in_lock.acquire()
-        if ((client_socket, socket_lock) in self.logged_in.values()):
-            username = [k for k, v in self.logged_in.items() if v == (
-                client_socket, socket_lock)][0]
-            self.logged_in.pop(username)
-            self.logged_in_lock.release()
+        if self.logged_in.atomic_logoff(client_socket, socket_lock):
             response = {'status': 'Success'}
         else:
-            self.logged_in_lock.release()
             response = {
                 'status': 'Error: Need to be logged in to log out of your account.'}
         return response
 
-    def process_operation_curried(self, socket_lock):
+    def process_operation_curried(self, socket_lock, addr):
         """Processes the operation. This is a curried function to work with the 
         read packets api provided in protocol. See the relevant process functions
         for functionality.
@@ -313,7 +405,7 @@ class Server:
             match operation_code:
                 case 1:  # CREATE_ACCOUNT
                     response = self.protocol.encode(
-                        'CREATE_ACCOUNT_RESPONSE', id_accum, self.process_create_account(args, client_socket, socket_lock))
+                        'CREATE_ACCOUNT_RESPONSE', id_accum, self.process_create_account(args, client_socket, addr, socket_lock))
                 case 3:  # LIST ACCOUNTS
                     response = self.protocol.encode(
                         'LIST_ACCOUNTS_RESPONSE', id_accum, self.process_list_accounts(args))
@@ -327,7 +419,7 @@ class Server:
                         'DELETE_ACCOUNT_RESPONSE', id_accum, self.process_delete_account(client_socket, socket_lock))
                 case 9:  # LOGIN
                     response = self.protocol.encode(
-                        'LOG_IN_RESPONSE', id_accum, self.process_login(args, client_socket, socket_lock))
+                        'LOG_IN_RESPONSE', id_accum, self.process_login(args, client_socket, addr, socket_lock))
                 case 11:  # LOGOFF
                     response = self.protocol.encode(
                         'LOG_OFF_RESPONSE', id_accum, self.process_logoff(client_socket, socket_lock))
@@ -339,6 +431,7 @@ class Server:
         """Sends any undelivered messages to the recipients. If the recipient is not logged in
         or sending fails, the undelivered message remains on the work queue. 
         """
+        # TODO: I haven't touched this yet, need to update to use the new helper classes
         self.undelivered_msg_lock.acquire()
         for recipient, message_infos in self.undelivered_msg.items():
             self.logged_in_lock.acquire()
@@ -386,7 +479,7 @@ class Server:
                 clientsocket.setblocking(1)
                 lock = threading.Lock()
                 thread = threading.Thread(
-                    target=self.handle_connection, args=(clientsocket, lock, ), daemon=True)
+                    target=self.handle_connection, args=(clientsocket, addr, lock, ), daemon=True)
                 thread.start()
                 print('Connection created with:', addr)
             except BlockingIOError:
