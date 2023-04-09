@@ -182,6 +182,12 @@ class Server:
             client (socket.socket): The socket to read from.
             socket_lock (threading.Lock): Lock to prevent concurrent socket read
         """
+        # TODO: When primary server starts, it needs to match the incoming connection addr with the corresponding
+        # usernames in the logged_in file if they exist. This is because the clients can be logged in before
+        # so when we reboot the server, we need to match the addr with the username they were associated with
+        # and make sure the logged in dict is updated to reflect that they are logged in, using the socket and socket lock.
+        # ?? Should we just automatically log everyone out when we reboot the server?? So on fresh start
+        # we don't keep track of any of this stuff and have the client log in again.
         if self.is_primary:
             self.handle_client(client_socket, addr, socket_lock)
         else:
@@ -466,7 +472,8 @@ class Server:
         print("Server started.")
         server_socket.listen()
 
-        # Need to determine the order in which this happens, because it should connect to all other servers before getting any client connections
+        # TODO: Need to determine the order in which this happens, because it should connect to all other servers before getting any client connections
+        # This currently does not work and doesn't do much
         self._connect_to_other_servers()
 
         if self.is_primary:
