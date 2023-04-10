@@ -34,7 +34,17 @@ class OperationCode(Enum):
     LOG_OFF = 11
     LOG_OFF_RESPONSE = 12
     RECV_MESSAGE = 13
-
+    SWITCH_PRIMARY = 14
+    GET_PRIMARY = 15
+    ASSIGN_PRIMARY = 16
+    ASSIGN_PRIMARY_RESPONSE = 17
+    UPDATE_ACCOUNT_STATE = 18
+    UPDATE_LOGIN_STATE = 19
+    UPDATE_MESSAGE_STATE = 20
+    REGISTER_CLIENT_UUID = 21
+    ACK = 22
+    HEARTBEAT = 23
+    GET_PRIMARY_RESPONSE = 24
 
 # Necessary arguments needed for each operation
 OPERATION_ARGS = {
@@ -50,7 +60,18 @@ OPERATION_ARGS = {
     'LOG_IN_RESPONSE': ['status', 'username'],
     'LOG_OFF': [],
     'LOG_OFF_RESPONSE': ['status'],
-    'RECV_MESSAGE': ['sender', 'message']
+    'RECV_MESSAGE': ['sender', 'message'],
+    'SWITCH_PRIMARY': ['host', 'port'],
+    'GET_PRIMARY': [],
+    'ASSIGN_PRIMARY': [],
+    'ASSIGN_PRIMARY_RESPONSE': ['id'],
+    'UPDATE_ACCOUNT_STATE': ['add_flag', 'username'],
+    'UPDATE_LOGIN_STATE': ['add_flag', 'username', 'uuid'],
+    'UPDATE_MESSAGE_STATE': ['add_one', 'recipient', 'sender', 'message'],
+    'REGISTER_CLIENT_UUID': ['uuid'],    
+    'ACK': [],
+    'HEARTBEAT': [],
+    'GET_PRIMARY_RESPONSE': ['id'],
 }
 
 
@@ -114,11 +135,11 @@ class Protocol:
         if set(OPERATION_ARGS[operation]).intersection(set(operation_args.keys())) != set(OPERATION_ARGS[operation]):
             raise ValueError(
                 f"Missing arguments for operation {operation}. Required arguments: {OPERATION_ARGS[operation]}")
-
         # Join keyword arguments with separator
         data = self.separator.join(
             [f"{key}={value}" if key in OPERATION_ARGS[operation] else "" for key, value in operation_args.items()])
         data += '\n'
+
 
         # Encode metadata and data into byte packets (may be multiple packets for large messages)
         return self._encode(OperationCode[operation].value, message_id, data)
@@ -138,7 +159,6 @@ class Protocol:
         """
         # Encode data
         encoded_data = self._encode_data(data)
-
         # Encode metadata
         bytes = bytearray(self._encode_component('version', self.version))
         bytes.extend(self._encode_component(
@@ -186,6 +206,28 @@ class Protocol:
             if not status:
                 return False
         return True
+    
+    def read_small_packets(self, client_socket):
+        md = bytes()
+        while (len(md) < METADATA_LENGTH):
+            print(len(md))
+            if (METADATA_LENGTH - len(md) > 0):
+                mdToAdd = client_socket.recv(METADATA_LENGTH - len(md))
+                if (int.from_bytes(mdToAdd, 'big') <= 0):
+                    # Socket disconnected
+                    return None
+                md += mdToAdd
+        packet_md = self.parse_metadata(md)
+        payload = bytes()
+        while (payload < packet_md.payload_size):
+            if (packet_md.payload_size - len(payload) > 0):
+                payloadToAdd = client_socket.recv(packet_md.payload_size - len(payload))
+                if (int.from_bytes(payloadToAdd, 'big') <= 0):
+                    # Socket disconnected
+                    return None
+                payload += payloadToAdd
+        return (packet_md, payload.decode('ascii')[:-1])
+
 
     def _send_one_packet(self, client_socket, packet: bytes, socket_lock=None) -> bool:
         """Send a single of encoded packet to the client_socket
@@ -305,9 +347,7 @@ class Protocol:
                             incomplete_msg = packet_to_parse.decode(
                                 'ascii')
                             # Check if this is a continuation of the current running message
-
                             if (curr_msg_id == packet_metadata.message_id and curr_op == packet_metadata.operation_code):
-
                                 running_msg += incomplete_msg
                             else:
                                 # Else this is a new message

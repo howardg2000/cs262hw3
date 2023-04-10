@@ -5,16 +5,18 @@ import protocol
 import threading
 from typing import Literal
 import logging
+import uuid
+import client_replica_library
 
 std_out_lock = threading.Lock()
 
 
 class Client:
-    def __init__(self, server_host, port, protocol):
-        self.server_host = server_host
-        self.port = port
+    def __init__(self, protocol):
+        self.client_library = client_replica_library.Client_Replica_Library(protocol)
         self.protocol = protocol
         self.message_counter = 0
+        self.uuid = str(uuid.uuid4())
         self.username = None
 
     def connect(self):
@@ -22,9 +24,7 @@ class Client:
         Starts a socket and starts a thread to connect to the client and receive messages
         """
         try:
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.connect((self.server_host, self.port))
-
+            self.message_counter = self.client_library.connect_to_service(self.message_counter, self.uuid)
             # Create a thread to listen continuously listen to server and respond to server messages
             thread = threading.Thread(
                 target=self.listen_to_server, daemon=True)
@@ -34,14 +34,13 @@ class Client:
             raise ConnectionError('Connection failed')
 
     def disconnect(self):
-        self.socket.close()
+        self.client_library.disconnect()
 
     def listen_to_server(self):
         """
         Listens to the server and processes the received messages
         """
-        self.protocol.read_packets(
-            self.socket, self.process_operation_curry(std_out_lock))
+        self.client_library.readFromServer(self.process_operation_curry(std_out_lock))
 
     def _get_prompt(self):
         command_line_prefix = f'{self.username} >' if self.username else '>'
@@ -89,7 +88,7 @@ class Client:
             message = self.protocol.encode(
                 action, self.message_counter, {'username': username})
             self.message_counter += 1
-            self.protocol.send(self.socket, message)
+            self.client_library.send(message)
         else:
             atomic_print(
                 std_out_lock, 'Invalid username. Username must be between 5 and 20 characters and only contain letters and numbers.')
@@ -104,7 +103,7 @@ class Client:
         message = self.protocol.encode(
             'LIST_ACCOUNTS', self.message_counter, {'query': query})
         self.message_counter += 1
-        self.protocol.send(self.socket, message)
+        self.client_library.send(message)
 
     def _send_message(self):
         """
@@ -116,7 +115,7 @@ class Client:
         message = self.protocol.encode(
             'SEND_MESSAGE', self.message_counter, {'recipient': user, 'message': user_msg})
         self.message_counter += 1
-        self.protocol.send(self.socket, message)
+        self.client_library.send(message)
 
     def _logoff(self):
         """
@@ -125,7 +124,7 @@ class Client:
         message = self.protocol.encode(
             'LOG_OFF', self.message_counter)
         self.message_counter += 1
-        self.protocol.send(self.socket, message)
+        self.client_library.send(message)
 
     def _delete_account(self):
         """
@@ -134,7 +133,7 @@ class Client:
         message = self.protocol.encode(
             'DELETE_ACCOUNT', self.message_counter)
         self.message_counter += 1
-        self.protocol.send(self.socket, message)
+        self.client_library.send(message)
 
     def process_operation_curry(self, out_lock):
         """Processes the operation. This is a curried function to work with the
