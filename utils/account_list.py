@@ -44,4 +44,11 @@ class AccountList:
             if pattern.match(account):
                 result.append(account)
         return result
+
+    def clear(self):
+        """
+        Clears the account list for testing purposes
+        """
+        self.account_list = [] # Map of username to uuid
+        open(self.filename, 'w').close() 
     

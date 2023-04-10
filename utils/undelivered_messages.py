@@ -41,3 +41,10 @@ class UndeliveredMessages:
                     f.write(f"{recipient} {sender} {message}\n")
                     f.flush()
 
+    def clear(self):
+        """
+        Clears the undelivered messages for testing purposes
+        """
+        self.undelivered_msg = defaultdict(list) 
+        open(self.filename, 'w').close() 
+    
