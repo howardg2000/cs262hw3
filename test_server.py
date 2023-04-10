@@ -6,13 +6,15 @@ from protocol import protocol_instance
 from unittest.mock import MagicMock
 
 TEST_HOST = "127.0.0.1"
-TEST_PORT = 6000
 TEST_PROTOCOL = protocol_instance
+TEST_CONFIG = [{"host": TEST_HOST, "port": 6000, "id": 1},
+               {"host": TEST_HOST, "port": 6001, "id": 2},
+               {"host": TEST_HOST, "port": 6002, "id": 3}]
 
 
 class ServerTest(unittest.TestCase):
     def setUp(self):
-        self.server = Server(TEST_HOST, TEST_PORT, TEST_PROTOCOL)
+        self.server = Server(TEST_CONFIG, 1, TEST_PROTOCOL)
         self.server.account_list.append("kevin")
         self.server.account_list.append("howie")
         mock_kevin_socket = MagicMock()
