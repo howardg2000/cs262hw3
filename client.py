@@ -12,9 +12,9 @@ std_out_lock = threading.Lock()
 
 
 class Client:
-    def __init__(self, protocol):
+    def __init__(self, protocol, server_configs):
         self.client_library = client_replica_library.ClientReplicaLibrary(
-            protocol)
+            protocol, server_configs)
         self.protocol = protocol
         self.message_counter = 0
         self.uuid = str(uuid.uuid4())

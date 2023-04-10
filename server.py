@@ -11,9 +11,15 @@ from utils import undelivered_messages
 
 
 class Server:
-    def __init__(self, host, port, protocol, server_id):
-        self.host = host
-        self.port = port
+    def __init__(self, servers_config, server_id, protocol):
+        self.other_server_configs = []
+        for server_config in servers_config:
+            if int(server_config["id"]) == int(server_id):
+                self.host = str(server_config["host"])
+                self.port = int(server_config["port"])
+            else:
+                self.other_server_configs.append(server_config)
+
         # List of socket objects that we are listening to
         self.other_server_sockets_accepted = []
         # Map of server_id to (socket, socket_lock) for servers listening to us
@@ -21,7 +27,7 @@ class Server:
         self.other_server_lock = threading.Lock()
 
         self.primary_id = -1  # The id of the primary server
-        self.server_id = server_id
+        self.server_id = int(server_id)
 
         self.msg_counter = 0
         # Lock for the recognition of acks from replicas
@@ -609,16 +615,21 @@ class Server:
         server_socket.bind((self.host, self.port))
         print("Server started.")
         server_socket.listen()
-        num_replicas = int(input('Enter the number of replicas: '))
+        num_replicas = len(self.other_server_configs)
+        # Start thread for listening for other servers
         thread = threading.Thread(target=self.connect_to_replicas, args=(
             server_socket, num_replicas, ), daemon=True)
         thread.start()
+
+        # Wait for other servers to start
+        time.sleep(10)
+
+        # Connect to other servers
         self.other_server_lock.acquire()
-        for i in range(1, num_replicas+1):
-            #host = input(f'Enter host for replica {i}: ')
-            host = self.host
-            port = int(input(f'Enter port for replica {i}: '))
-            id = int(input(f'Enter id for replica {i}: '))
+        for server_config in self.other_server_configs:
+            host = str(server_config["host"])
+            port = int(server_config["port"])
+            id = int(server_config["id"])
             replica_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             replica_socket.connect((host, port))
             self.other_server_sockets_connected[id] = (
@@ -626,7 +637,7 @@ class Server:
             print(f"Connected to {host}, {port}")
         print(str(self.other_server_sockets_connected))
         self.other_server_lock.release()
-        time.sleep(10)
+        time.sleep(2)
 
         # Determine primary and either start message delivery thread or heartbeat thread depending on if primary or not
         self.determine_primary_server()
@@ -671,6 +682,7 @@ class Server:
         print(str(alive_server_ids))
 
     def check_heartbeat(self):
+        """Sends a heartbeat check to primary server periodically and if the connection is dropped, determine new primary."""
         while True:
             self.other_server_lock.acquire()
             primary_socket, socket_lock = self.other_server_sockets_connected[self.primary_id]
@@ -695,7 +707,7 @@ class Server:
             sleep(0.5)
 
     def become_primary(self):
-        # Start message delivery thread
+        """Starts the message delivery thread as the primary server."""
         self.message_delivery_thread = threading.Thread(
             target=self.send_messages, daemon=True)
         self.message_delivery_thread.start()

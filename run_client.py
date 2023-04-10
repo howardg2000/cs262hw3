@@ -1,8 +1,14 @@
 import client
 import protocol
+import sys
+import json
 
 if __name__ == '__main__':
-    client_instance = client.Client(protocol.protocol_instance)
+    config_file = sys.argv[1]
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+    client_instance = client.Client(
+        protocol.protocol_instance, config['servers'])
     try:
         client_instance.connect()
         client_instance.run()

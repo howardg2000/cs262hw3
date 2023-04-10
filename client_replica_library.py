@@ -2,36 +2,36 @@
 from uuid import uuid4
 import socket
 import protocol
-config = [('127.0.0.1', 6000, 1), ('127.0.0.1',
-                                   6001, 2), ('127.0.0.1', 6002, 3)]
 
 
 class ClientReplicaLibrary:
-    def __init__(self, protocol):
+    def __init__(self, protocol, server_configs):
         self.sockets = {}
         self.primary = None
         self.protocol = protocol
 
+        self.config = [(config['host'], config['port'], config['id'])
+                       for config in server_configs]
+
     def connect_to_service(self, msg_counter, uuid):
+        """Connect to each server in the config and register the client."""
         msg_count = msg_counter
-        print("connecting")
-        for item in config:
+        print("Connecting...")
+        for host, port, id in self.config:
             this_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            host = item[0]
-            port = item[1]
             try:
                 this_socket.connect((host, port))
             except:
-                print("Couldn't connect")
+                print(f"Couldn't connect to server at {host}:{port}.")
             try:
                 self.protocol.send(this_socket, self.protocol.encode(
                     'REGISTER_CLIENT_UUID', msg_count, {'uuid': uuid}))
             except:
-                print("Couldn't send")
+                print(f"Couldn't register client to server at {host}:{port}.")
                 continue
             msg_count += 1
 
-            self.sockets[item[2]] = this_socket
+            self.sockets[id] = this_socket
             # Set primary correctly
         if (len(self.sockets) == 0):
             raise ConnectionError("Connection Failed")

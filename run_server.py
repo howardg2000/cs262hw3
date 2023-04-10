@@ -1,16 +1,16 @@
 import server
-import socket
-import threading
+import json
 import protocol
 import sys
 
 
 if __name__ == '__main__':
-    host = sys.argv[1]
-    port = int(sys.argv[2])
-    id = int(sys.argv[3])
+    config_file = sys.argv[1]
+    id = int(sys.argv[2])
+    with open(config_file, 'r') as f:
+        config = json.load(f)
     server = server.Server(
-        host, port, protocol.protocol_instance, id)
+        config["servers"], id, protocol.protocol_instance)
     try:
         server.run()
     except KeyboardInterrupt:
