@@ -4,7 +4,7 @@ import protocol
 import socket
 from uuid import uuid4
 
-class Client_Replica_Library:
+class ClientReplicaLibrary:
     def __init__(self, protocol):
         self.sockets = {}
         self.primary = None
@@ -39,17 +39,11 @@ class Client_Replica_Library:
             socket.close()
         
     def readFromServer(self, process_operation):
-        def process_switch(client_socket, metadata: protocol.Metadata, msg, id_accum):    
-            operation_code = metadata.operation_code.value
-            args = self.protocol.parse_data(operation_code, msg)
-            match operation_code:
-                case 14: # Switch Primary
-                    self.primary = self.sockets[('host', 'port')]
-                case _: 
-                    process_operation(client_socket, metadata, msg, id_accum)
         while not self.primary is None:
-            value = self.protocol.read_packets(self.primary, process_switch)
+            value = self.protocol.read_packets(self.primary, process_operation)
+            print(value)
             if (value is None):
+                print("Changing primary")
                 self.primary = None
                 for socket in self.sockets.values():
                     ack = self.protocol.read_small_packets(socket)
@@ -58,6 +52,7 @@ class Client_Replica_Library:
                     else:
                         (md, msg) = ack
                         self.primary = self.sockets[int(self.protocol.parse_data(md.operation_code, msg)['id'])]
+                        print(f"New primary {self.primary}")
                         break
         self.disconnect()
         print("Disconnected from server")

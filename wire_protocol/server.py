@@ -14,27 +14,27 @@ class Server:
     def __init__(self, host, port, protocol, server_id):
         self.host = host
         self.port = port
-        self.other_server_sockets_accepted = []
-        self.other_server_sockets_connected = {}
+        self.other_server_sockets_accepted = [] # List of socket objects that we are listening to
+        self.other_server_sockets_connected = {} # Map of server_id to (socket, socket_lock) for servers listening to us
         self.other_server_lock = threading.Lock()
 
-        self.primary_id = -1
+        self.primary_id = -1 # The id of the primary server
         self.server_id = server_id
 
         self.msg_counter = 0    
-        self.acknowledgement_lock = threading.Lock()
+        self.acknowledgement_lock = threading.Lock() # Lock for the recognition of acks from replicas
 
         self.clients = {} # map of (client socket, socket_lock) to uuid
         self.clients_lock = threading.Lock()
 
-        self.account_list = account_list.AccountList(f"logs/account_list_{server_id}.log")  # List of usernames
+        self.account_list = account_list.AccountList(f"logs/account_list_{server_id}.log")  # Manages account list
         self.account_list_lock = threading.Lock()
 
-        self.logged_in = logged_in_accounts.LoggedInAccounts(f"logs/logged_in_accounts_{server_id}.log")  # Map of username to uuid
+        self.logged_in = logged_in_accounts.LoggedInAccounts(f"logs/logged_in_accounts_{server_id}.log")  # Manages usernames and uuids that are logged in
         self.logged_in_lock = threading.Lock()
 
         # Map of recipient username to list of (sender, message) for that recipient
-        self.undelivered_msg = undelivered_messages.UndeliveredMessages(f"logs/undelivered_messages_{server_id}.log")
+        self.undelivered_msg = undelivered_messages.UndeliveredMessages(f"logs/undelivered_messages_{server_id}.log") # Manages undelivered messag
         self.undelivered_msg_lock = threading.Lock()
         
         self.message_delivery_thread = None
@@ -80,6 +80,7 @@ class Server:
         print("Closing client.")
     
     def handle_replica(self, client, socket_lock):
+        """Function to listen for and handle messages from replica servers."""
         value = self.protocol.read_packets(
             client, self.process_operation_curried(socket_lock))
         if value is None:
@@ -237,11 +238,12 @@ class Server:
         if self.logged_in.is_logged_in(uuid):
             username = self.logged_in.get_username(uuid)
             # Notify replicas of update
-            self.wait_for_update_accounts_ack("False", username)
+            self.wait_for_update_login_ack("False", username, uuid)
             self.logged_in.logoff(username)
             self.logged_in_lock.release()
             self.clients_lock.release()
             self.account_list_lock.acquire()
+            self.wait_for_update_accounts_ack("False", username)
             self.account_list.remove(username)
             self.account_list_lock.release()
             response = {'status': 'Success'}
@@ -319,6 +321,7 @@ class Server:
         return response
 
     def process_new_client(self, args, client_socket, socket_lock):
+        """Processes a new client request for replication."""
         uuid = args['uuid']
         self.clients_lock.acquire()
         self.clients[(client_socket, socket_lock)] = uuid
@@ -326,6 +329,13 @@ class Server:
         return None
     
     def process_update_accounts(self, args):
+        """Processes an update to the account list for replication
+        
+        Args:
+            args (dict): The args object for sending a message. Should contain 'add_flag' and 'username'.
+                'add_flag' should be a string representation of a boolean, 'True' means we are adding an account,
+                and 'False' means we are removing an account. 'username' should be the username of the account.
+        """
         add = args['add_flag']
         username = args['username']
         self.account_list_lock.acquire()
@@ -336,6 +346,13 @@ class Server:
         self.account_list_lock.release()
 
     def process_update_login(self, args):
+        """Processes an update to the logged in list for replication.
+        
+        Args:
+            args (dict): The args object for sending a message. Should contain 'add_flag', 'username', and 'uuid'.
+                'add_flag' should be a string representation of a boolean, 'True' means we are adding an entry to the logged in list,
+                and 'False' means we are removing an entry from the logged in list. 
+        """
         add = args['add_flag']
         username = args['username']
         uuid = args['uuid']
@@ -347,6 +364,17 @@ class Server:
         self.logged_in_lock.release()
     
     def process_update_message_state(self, args):
+        """Processes an update to undelivered messages for replication.
+        
+        Args:
+            args (dict): The args object for sending a message. Should contain 'add_one', 'recipient', 'sender', and 'message'.
+                'add_one' should be a string representation of a boolean, 
+                'True' means we are adding one message to the receipient's list of undelivered messages,
+                and 'False' means we are replacing the receipient's list of undelivered messages.
+                'recipient' should be the username of the recipient. 
+                'sender' should be the username of the sender or a concatenation of the usernames of the senders separated by '\r'.
+                'message' should be the message or a concatenation of the messages separated by '\r'.
+        """
         add = args['add_one']
         recipient = args['recipient']
         sender = args['sender']
@@ -361,9 +389,22 @@ class Server:
             self.undelivered_msg.update_messages(recipient, tupleList)
         self.undelivered_msg_lock.release()
         
-    def wait_for_update_accounts_ack(self, add_flag, username):
+    def wait_for_update_accounts_ack(self, add_flag: str, username: str):
+        """Sends message to replicas notifying of an update to accounts,
+        and waits for acknowledgement from all replicas that they have updated their account lists.
+        
+        args:
+            add_flag (str): A string representation of a boolean, 'True' means we are adding an account,
+                and 'False' means we are removing an account. 
+            username (str): The username of the account.
+        """
+        print(f"waiting for ack lock for accounts {self.server_id} ")
+        print(self.primary_id)
         self.acknowledgement_lock.acquire()
+        print("acquired ack lock for accounts")
+        print("waiting for other lock for accounts")
         self.other_server_lock.acquire()
+        print("acquired other lock for accounts")
         for (replica, socket_lock) in self.other_server_sockets_connected.values():
             response = self.protocol.encode('UPDATE_ACCOUNT_STATE', self.msg_counter, {'add_flag': add_flag, 'username': username})
             self.protocol.send(replica, response, socket_lock)
@@ -375,9 +416,23 @@ class Server:
         self.other_server_lock.release()
         self.acknowledgement_lock.release()
     
-    def wait_for_update_login_ack(self, add_flag, username, uuid):
+    def wait_for_update_login_ack(self, add_flag: str, username: str, uuid: str):
+        """Sends message to replicas notifying of an update to logged in accounts,
+        and waits for acknowledgement from all replicas that they have updated their logged in lists.
+        
+        args:
+            add_flag (str): A string representation of a boolean, 'True' means we are adding a logged in account,
+                and 'False' means we are removing a logged in account. 
+            username (str): The username of the account.
+            uuid (str): The uuid of the account.
+        """
+        print(f"waiting for ack lock for login {self.server_id} ")
+        print(self.primary_id)
         self.acknowledgement_lock.acquire()
+        print("acquired ack lock for login")
+        print("waiting for other lock for login")
         self.other_server_lock.acquire()
+        print("acquired other lock for login")
         for (replica, socket_lock) in self.other_server_sockets_connected.values():
             response = self.protocol.encode('UPDATE_LOGIN_STATE', self.msg_counter, {'add_flag': add_flag, 'username': username, 'uuid': uuid})
             self.protocol.send(replica, response, socket_lock)
@@ -389,9 +444,24 @@ class Server:
         self.other_server_lock.release()
         self.acknowledgement_lock.release()
 
-    def wait_for_update_message_ack(self, add_flag, recipient, sender, message):
+    def wait_for_update_message_ack(self, add_flag: str, recipient: str, sender: str, message: str):
+        """Sends message to replicas notifying of an update to undelivered messages,
+        and waits for acknowledgement from all replicas that they have updated their undelivered messages.
+        
+        args:
+            add_flag (str): A string representation of a boolean, 'True' means we are adding one undelivered message,
+                and 'False' means we are replacing all of a recipient's undelivered messages. 
+            recipient (str): The recipient of the message.
+            sender (str): The sender of the message or a concatenation of the usernames of the senders separated by '\r'..
+            message (str): The message or a concatenation of the messages separated by '\r'.
+        """
+        print(f"waiting for ack lock for messages {self.server_id} ")
+        print(self.primary_id)
         self.acknowledgement_lock.acquire()
+        print("acquired ack lock for for msg")
+        print("waiting for other lock for msg ")
         self.other_server_lock.acquire()
+        print("acquired other lock for msg")
         for (replica, socket_lock) in self.other_server_sockets_connected.values():
             response = self.protocol.encode('UPDATE_MESSAGE_STATE', self.msg_counter, {'add_one': add_flag, 'recipient': recipient, 'sender': sender, 'message': message})
             self.protocol.send(replica, response, socket_lock)
@@ -427,6 +497,7 @@ class Server:
             """
             operation_code = metadata.operation_code.value
             args = self.protocol.parse_data(operation_code, msg)
+            print(operation_code)
             match operation_code:
                 case 1:  # CREATE_ACCOUNT
                     response = self.protocol.encode(
@@ -568,8 +639,6 @@ class Server:
                 print('Connection created with:', addr)
             except BlockingIOError:
                 pass
-            finally:
-                self.handle_undelivered_messages()
 
     def determine_primary_server(self):
         # Send id to all servers and the one with the lowest id is primary
@@ -595,6 +664,7 @@ class Server:
         while True:
             self.other_server_lock.acquire()
             primary_socket, socket_lock = self.other_server_sockets_connected[self.primary_id]
+            self.other_server_lock.release()
             response = self.protocol.encode("HEARTBEAT", self.msg_counter, {"id": str(self.server_id)})
             self.protocol.send(primary_socket, response, socket_lock)
             self.msg_counter += 1

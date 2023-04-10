@@ -13,7 +13,7 @@ std_out_lock = threading.Lock()
 
 class Client:
     def __init__(self, protocol):
-        self.client_library = client_replica_library.Client_Replica_Library(protocol)
+        self.client_library = client_replica_library.ClientReplicaLibrary(protocol)
         self.protocol = protocol
         self.message_counter = 0
         self.uuid = str(uuid.uuid4())
