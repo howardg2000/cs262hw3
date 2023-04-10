@@ -1,4 +1,4 @@
-# Design Exercise 1
+# Design Exercise 3
 
 ## Overview
 This is a simple chat messaging service. It supports multiple clients connecting to the server. We support several operations:
@@ -27,17 +27,33 @@ This functionality is implemented using our own wire protocol. It is persistent 
 ## Setting up the Custom Wire Protocol Server
 To run the server, first ensure that the machine that will be running the server has turned off their firewall. Then, from the project root, run 
 ```sh
-python3 run_server.py
+python3 run_server.py <config.json> <id>
 ```
-If ```Server started``` is printed, then the server is ready to accept connections. To find the IP address which the server is being hosted at, go to 
-```System Preferences -> Network -> Advanced -> TCP/IP```. The IP address the server is being hosted at should be listed there. The port for the server is 6000.
+Here `config.json` is contains the host, port, and id of all servers we will be running. The id argument is the id of the server we want to start running. The config json should be of the form 
+```json
+{
+    "servers": [
+        {
+            "id": 1,
+            "host": "127.0.0.1",
+            "port": 6000
+        },
+        ...
+    ]
+}
+```
+
+If ```Server started``` is printed, then the server is ready to accept connections. There is a 10 second buffer time to allow for all servers to be started before servers begin connecting to each other. Make sure to begin running all the servers in this time frame.
+
+To find the IP address which the server is being hosted at, go to 
+```System Preferences -> Network -> Advanced -> TCP/IP```. The IP address the server is being hosted at should be listed there. 
 
 ## Setting up the Custom Wire Protocol Client
 To run the client, first ensure that the machine that will be running the server has turned off their firewall. Then, from the project root, run 
 ```sh
-python3 run_client.py
+python3 run_client.py <config.json>
 ```
-You will then be asked to input a hostname and port; the hostname can be found by following the above instructions on the server machine, and the port is 6000. If the connection is successful, you will see ```Connected to Server```. If not, check that the host and port are correct. 
+The config file should be the same as the one used to start the individual servers. It contains information about each of the servers so the client can connect to each, but it only sends request to the primary server. If the connection is successful, you will see ```Connected to Server```. If not, check that the host and port are correct. 
 
 
 ## Sending Messages
@@ -71,7 +87,7 @@ As you're sending messages, you might come across various errors. Each operation
   - If the user is not logged in, the server will respond with an error
 
 ## Stopping the Client/Server
-To stop the client or server, simply press ```ctrl-C``` to exit the client or server. 
+To stop the client or server, simply press ```ctrl-C``` to exit the client or server. To make this a 2-fault tolerant system, you will need to start at least 3 servers, and as long as one server is running, the clients will be able to have full functionality.
 
 <br>
 
