@@ -193,6 +193,7 @@ class Server:
             client (socket.socket): The client socket
             socket_lock (threading.Lock): The socket's associated lock
         """
+        print("Processing send message")
         self.clients_lock.acquire()
         self.logged_in_lock.acquire()
         uuid = self.clients[(client_socket, socket_lock)]
@@ -202,6 +203,7 @@ class Server:
             response = {
                 'status': 'Error: Need to be logged in to send a message.'}
         else:
+            print("logged in")
             username = self.logged_in.get_username(uuid)
             self.logged_in_lock.release()
             self.clients_lock.release()
@@ -678,7 +680,8 @@ class Server:
                     for client in self.clients.keys():
                         self.protocol.send(client[0], self.protocol.encode("SWITCH_PRIMARY", self.msg_counter, {"id": self.primary_id}), client[1])
                     self.become_primary()
-                    break
+                    self.clients_lock.release()
+                    return
             
             sleep(0.5)
             
