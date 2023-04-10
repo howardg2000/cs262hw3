@@ -13,7 +13,8 @@ std_out_lock = threading.Lock()
 
 class Client:
     def __init__(self, protocol):
-        self.client_library = client_replica_library.ClientReplicaLibrary(protocol)
+        self.client_library = client_replica_library.ClientReplicaLibrary(
+            protocol)
         self.protocol = protocol
         self.message_counter = 0
         self.uuid = str(uuid.uuid4())
@@ -24,7 +25,8 @@ class Client:
         Starts a socket and starts a thread to connect to the client and receive messages
         """
         try:
-            self.message_counter = self.client_library.connect_to_service(self.message_counter, self.uuid)
+            self.message_counter = self.client_library.connect_to_service(
+                self.message_counter, self.uuid)
             # Create a thread to listen continuously listen to server and respond to server messages
             thread = threading.Thread(
                 target=self.listen_to_server, daemon=True)
@@ -40,7 +42,8 @@ class Client:
         """
         Listens to the server and processes the received messages
         """
-        self.client_library.readFromServer(self.process_operation_curry(std_out_lock))
+        self.client_library.readFromServer(
+            self.process_operation_curry(std_out_lock))
 
     def _get_prompt(self):
         command_line_prefix = f'{self.username} >' if self.username else '>'

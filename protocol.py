@@ -46,6 +46,7 @@ class OperationCode(Enum):
     HEARTBEAT = 23
     GET_PRIMARY_RESPONSE = 24
 
+
 # Necessary arguments needed for each operation
 OPERATION_ARGS = {
     'CREATE_ACCOUNT': ['username'],
@@ -68,7 +69,7 @@ OPERATION_ARGS = {
     'UPDATE_ACCOUNT_STATE': ['add_flag', 'username'],
     'UPDATE_LOGIN_STATE': ['add_flag', 'username', 'uuid'],
     'UPDATE_MESSAGE_STATE': ['add_one', 'recipient', 'sender', 'message'],
-    'REGISTER_CLIENT_UUID': ['uuid'],    
+    'REGISTER_CLIENT_UUID': ['uuid'],
     'ACK': [],
     'HEARTBEAT': [],
     'GET_PRIMARY_RESPONSE': ['id'],
@@ -140,7 +141,6 @@ class Protocol:
             [f"{key}={value}" if key in OPERATION_ARGS[operation] else "" for key, value in operation_args.items()])
         data += '\n'
 
-
         # Encode metadata and data into byte packets (may be multiple packets for large messages)
         return self._encode(OperationCode[operation].value, message_id, data)
 
@@ -206,7 +206,7 @@ class Protocol:
             if not status:
                 return False
         return True
-    
+
     def read_small_packets(self, client_socket):
         try:
             md = bytes()
@@ -221,7 +221,8 @@ class Protocol:
             payload = bytes()
             while (len(payload) < packet_md.payload_size):
                 if (packet_md.payload_size - len(payload) > 0):
-                    payloadToAdd = client_socket.recv(packet_md.payload_size - len(payload))
+                    payloadToAdd = client_socket.recv(
+                        packet_md.payload_size - len(payload))
                     if (int.from_bytes(payloadToAdd, 'big') <= 0):
                         # Socket disconnected
                         return None
@@ -229,7 +230,6 @@ class Protocol:
             return (packet_md, payload.decode('ascii')[:-1])
         except:
             return None
-
 
     def _send_one_packet(self, client_socket, packet: bytes, socket_lock=None) -> bool:
         """Send a single of encoded packet to the client_socket
@@ -332,7 +332,8 @@ class Protocol:
 
                     while continue_packet_iteration and len(curr_msg_to_parse) > METADATA_LENGTH:
                         # Invariant here is that we at least have the metadata available
-                        packet_metadata = self.parse_metadata(curr_msg_to_parse)
+                        packet_metadata = self.parse_metadata(
+                            curr_msg_to_parse)
                         if packet_metadata.version != VERSION:
                             return None
                         else:
@@ -360,7 +361,7 @@ class Protocol:
                                 # If running msg is done, then do something based on metadata
                                 if (running_msg[-1] == '\n'):
                                     message_processor(client, packet_metadata, running_msg[:-1],
-                                                    msg_id_accum)
+                                                      msg_id_accum)
                                     msg_id_accum += 1
                                     curr_msg_id = -1
                                     curr_op = -1
@@ -368,7 +369,7 @@ class Protocol:
                                 # Once we've processed the current packet, we want to set the curr_msg_to_parse
                                 # to be the rest of the received, and then continue iterating to process the rest of the packets
                                 curr_msg_to_parse = curr_msg_to_parse[curr_payload_size +
-                                                                    METADATA_LENGTH:]
+                                                                      METADATA_LENGTH:]
                     left_over_packet = curr_msg_to_parse
             except:
                 return None
