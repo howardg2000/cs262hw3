@@ -637,7 +637,7 @@ class Server:
             print(f"Connected to {host}, {port}")
         print(str(self.other_server_sockets_connected))
         self.other_server_lock.release()
-        time.sleep(2)
+        time.sleep(10)
 
         # Determine primary and either start message delivery thread or heartbeat thread depending on if primary or not
         self.determine_primary_server()
