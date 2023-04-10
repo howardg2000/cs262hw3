@@ -552,18 +552,19 @@ class Server:
         for recipient, message_infos in self.undelivered_msg.get_messages():
             self.clients_lock.acquire()
             self.logged_in_lock.acquire()
-            if self.logged_in.username_is_logged_in(recipient):
+            if message_infos and self.logged_in.username_is_logged_in(recipient):
                 uuid = self.logged_in.get_uuid_from_username(recipient)
                 (client_socket, socket_lock) = [k for k, v in self.clients.items() if v == uuid][0]
                 undelivered_messages = []
                 for (sender, msg) in message_infos:
-                    response = self.protocol.encode(
-                        "RECV_MESSAGE", self.msg_counter, {"sender": sender, "message": msg})
-                    status = self.protocol.send(
-                        client_socket, response, socket_lock)
-                    if not status:
-                        undelivered_messages.append((sender, msg))
-                    self.msg_counter = self.msg_counter + 1
+                    if (not (sender == "" or msg == "")):
+                        response = self.protocol.encode(
+                            "RECV_MESSAGE", self.msg_counter, {"sender": sender, "message": msg})
+                        status = self.protocol.send(
+                            client_socket, response, socket_lock)
+                        if not status:
+                            undelivered_messages.append((sender, msg))
+                        self.msg_counter = self.msg_counter + 1
                     
                 # Notify replicas of update to undelivered messages
                 senders_string = self.separator.join([msg_info[0] for msg_info in undelivered_messages])
@@ -605,7 +606,7 @@ class Server:
         server_socket.bind((self.host, self.port))
         print("Server started.")
         server_socket.listen()
-        num_replicas = int(input('Enter the number of replicas'))
+        num_replicas = int(input('Enter the number of replicas: '))
         thread = threading.Thread(target=self.connect_to_replicas, args = (server_socket, num_replicas, ), daemon=True)
         thread.start()
         self.other_server_lock.acquire()
@@ -679,8 +680,9 @@ class Server:
                     self.clients_lock.acquire()
                     for client in self.clients.keys():
                         self.protocol.send(client[0], self.protocol.encode("SWITCH_PRIMARY", self.msg_counter, {"id": self.primary_id}), client[1])
-                    self.become_primary()
+                        self.msg_counter += 1
                     self.clients_lock.release()
+                    self.become_primary()
                     return
             
             sleep(0.5)
