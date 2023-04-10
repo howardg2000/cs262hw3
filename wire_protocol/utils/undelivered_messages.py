@@ -30,7 +30,6 @@ class UndeliveredMessages:
         self.undelivered_msg[recipient] = message_infos
         with open(self.filename, 'r') as f:
             lines = f.readlines()
-        print(lines)
         with open(self.filename, 'w') as f:
             f.writelines(filter(lambda line: line.strip() and line.strip().split()[0] != recipient, lines))
             for sender, message in message_infos:

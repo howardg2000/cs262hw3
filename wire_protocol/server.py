@@ -16,6 +16,7 @@ class Server:
         self.port = port
         self.other_server_sockets_accepted = []
         self.other_server_sockets_connected = {}
+        self.other_server_lock = threading.Lock()
 
         self.primary_id = -1
         self.server_id = server_id
@@ -77,6 +78,14 @@ class Server:
         self.logged_in_lock.release()
         self.clients_lock.release()
         print("Closing client.")
+    
+    def handle_replica(self, client, socket_lock):
+        value = self.protocol.read_packets(
+            client, self.process_operation_curried(socket_lock))
+        if value is None:
+            client.close()
+        print("Closing replica.")
+    
 
     def atomicIsLoggedIn(self, client_socket, socket_lock):
         """Atomically checks if the client is logged in 
@@ -106,6 +115,7 @@ class Server:
         self.clients_lock.acquire()
         self.logged_in_lock.acquire()
         uuid = self.clients[(client_socket, socket_lock)]
+        self.wait_for_update_login_ack("True", account_name, uuid)
         self.logged_in.login(account_name, uuid)
         self.logged_in_lock.release()
         self.clients_lock.release()
@@ -353,6 +363,7 @@ class Server:
         
     def wait_for_update_accounts_ack(self, add_flag, username):
         self.acknowledgement_lock.acquire()
+        self.other_server_lock.acquire()
         for (replica, socket_lock) in self.other_server_sockets_connected.values():
             response = self.protocol.encode('UPDATE_ACCOUNT_STATE', self.msg_counter, {'add_flag': add_flag, 'username': username})
             self.protocol.send(replica, response, socket_lock)
@@ -361,10 +372,12 @@ class Server:
             if ack is None:
                 #TODO say replica died
                 self.replica_died(replica)
+        self.other_server_lock.release()
         self.acknowledgement_lock.release()
     
     def wait_for_update_login_ack(self, add_flag, username, uuid):
         self.acknowledgement_lock.acquire()
+        self.other_server_lock.acquire()
         for (replica, socket_lock) in self.other_server_sockets_connected.values():
             response = self.protocol.encode('UPDATE_LOGIN_STATE', self.msg_counter, {'add_flag': add_flag, 'username': username, 'uuid': uuid})
             self.protocol.send(replica, response, socket_lock)
@@ -373,10 +386,12 @@ class Server:
             if ack is None:
                 #TODO say replica died
                 self.replica_died(replica)
+        self.other_server_lock.release()
         self.acknowledgement_lock.release()
 
     def wait_for_update_message_ack(self, add_flag, recipient, sender, message):
         self.acknowledgement_lock.acquire()
+        self.other_server_lock.acquire()
         for (replica, socket_lock) in self.other_server_sockets_connected.values():
             response = self.protocol.encode('UPDATE_MESSAGE_STATE', self.msg_counter, {'add_one': add_flag, 'recipient': recipient, 'sender': sender, 'message': message})
             self.protocol.send(replica, response, socket_lock)
@@ -385,6 +400,7 @@ class Server:
             if ack is None:
                 #TODO say replica died
                 self.replica_died(replica)
+        self.other_server_lock.release()
         self.acknowledgement_lock.release()
 
     def replica_died(self, replica_socket): 
@@ -497,14 +513,13 @@ class Server:
         i = 0
         while i < num_replicas:
             try:
-                print("TRying to connect to replicas")
                 clientsocket, addr = server_socket.accept()
                 print('Connection created with:', addr)
                 clientsocket.setblocking(1)
                 self.other_server_sockets_accepted.append(clientsocket)
                 lock = threading.Lock()
                 thread = threading.Thread(
-                    target=self.handle_connection, args=(clientsocket, lock, ), daemon=True)
+                    target=self.handle_replica, args=(clientsocket, lock, ), daemon=True)
                 thread.start()
                 i += 1
             except BlockingIOError:
@@ -519,14 +534,20 @@ class Server:
         server_socket.listen()
         num_replicas = int(input('Enter the number of replicas'))
         thread = threading.Thread(target=self.connect_to_replicas, args = (server_socket, num_replicas, ), daemon=True)
+        thread.start()
+        self.other_server_lock.acquire()
         for i in range(1, num_replicas+1):
-            host = input(f'Enter host for replica {i}: ')
+            #host = input(f'Enter host for replica {i}: ')
+            host = self.host
             port = int(input(f'Enter port for replica {i}: '))
             id = int(input(f'Enter id for replica {i}: '))
             replica_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             replica_socket.connect((host, port))
             self.other_server_sockets_connected[id] = (replica_socket, threading.Lock())
             print(f"Connected to {host}, {port}")
+        print(str(self.other_server_sockets_connected))
+        self.other_server_lock.release()
+        time.sleep(10)
         
         # Determine primary and either start message delivery thread or heartbeat thread depending on if primary or not
         self.determine_primary_server()
@@ -553,20 +574,26 @@ class Server:
     def determine_primary_server(self):
         # Send id to all servers and the one with the lowest id is primary
         # Check to make sure this doesn't deadlock
-        alive_server_ids = []
+        alive_server_ids = [self.server_id]
+        self.other_server_lock.acquire()
         for (server_socket, socket_lock) in self.other_server_sockets_connected.values():
             print("Assigning primary")
-            self.protocol.send(server_socket, self.protocol.encode("ASSIGN_PRIMARY", self.msg_counter), socket_lock)
+            value =self.protocol.send(server_socket, self.protocol.encode("ASSIGN_PRIMARY", self.msg_counter), socket_lock)
             self.msg_counter += 1
             ack = self.protocol.read_small_packets(server_socket)
             if ack is not None:
                 (md, msg) = ack
                 alive_server_ids.append(int(self.protocol.parse_data(md.operation_code, msg)['id']))
+        self.other_server_lock.release()
+        
         self.primary_id = min(alive_server_ids)
+        print(f"primary is {self.primary_id}")
+        print(str(alive_server_ids))
 
     
     def check_heartbeat(self):
         while True:
+            self.other_server_lock.acquire()
             primary_socket, socket_lock = self.other_server_sockets_connected[self.primary_id]
             response = self.protocol.encode("HEARTBEAT", self.msg_counter, {"id": str(self.server_id)})
             self.protocol.send(primary_socket, response, socket_lock)
@@ -574,10 +601,12 @@ class Server:
             ack = self.protocol.read_small_packets(primary_socket)
             if ack is None:
                 # TODO: Primary is dead, need to choose new primary. I think this is done, can remove from sockets_accepted too?
-                self.other_server_sockets_connected.pop(self.primary_id)
+                #self.other_server_sockets_connected.pop(self.primary_id)
                 self.determine_primary_server()
-            
                 if self.primary_id == self.server_id:
+                    self.clients_lock.acquire()
+                    for client in self.clients.keys():
+                        self.protocol.send(client[0], self.protocol.encode("SWITCH_PRIMARY", self.msg_counter, {"id": self.primary_id}), client[1])
                     self.become_primary()
                     break
             

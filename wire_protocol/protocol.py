@@ -61,7 +61,7 @@ OPERATION_ARGS = {
     'LOG_OFF': [],
     'LOG_OFF_RESPONSE': ['status'],
     'RECV_MESSAGE': ['sender', 'message'],
-    'SWITCH_PRIMARY': ['host', 'port'],
+    'SWITCH_PRIMARY': ['id'],
     'GET_PRIMARY': [],
     'ASSIGN_PRIMARY': [],
     'ASSIGN_PRIMARY_RESPONSE': ['id'],
@@ -208,25 +208,27 @@ class Protocol:
         return True
     
     def read_small_packets(self, client_socket):
-        md = bytes()
-        while (len(md) < METADATA_LENGTH):
-            print(len(md))
-            if (METADATA_LENGTH - len(md) > 0):
-                mdToAdd = client_socket.recv(METADATA_LENGTH - len(md))
-                if (int.from_bytes(mdToAdd, 'big') <= 0):
-                    # Socket disconnected
-                    return None
-                md += mdToAdd
-        packet_md = self.parse_metadata(md)
-        payload = bytes()
-        while (payload < packet_md.payload_size):
-            if (packet_md.payload_size - len(payload) > 0):
-                payloadToAdd = client_socket.recv(packet_md.payload_size - len(payload))
-                if (int.from_bytes(payloadToAdd, 'big') <= 0):
-                    # Socket disconnected
-                    return None
-                payload += payloadToAdd
-        return (packet_md, payload.decode('ascii')[:-1])
+        try:
+            md = bytes()
+            while (len(md) < METADATA_LENGTH):
+                if (METADATA_LENGTH - len(md) > 0):
+                    mdToAdd = client_socket.recv(METADATA_LENGTH - len(md))
+                    if (int.from_bytes(mdToAdd, 'big') <= 0):
+                        # Socket disconnected
+                        return None
+                    md += mdToAdd
+            packet_md = self.parse_metadata(md)
+            payload = bytes()
+            while (len(payload) < packet_md.payload_size):
+                if (packet_md.payload_size - len(payload) > 0):
+                    payloadToAdd = client_socket.recv(packet_md.payload_size - len(payload))
+                    if (int.from_bytes(payloadToAdd, 'big') <= 0):
+                        # Socket disconnected
+                        return None
+                    payload += payloadToAdd
+            return (packet_md, payload.decode('ascii')[:-1])
+        except:
+            return None
 
 
     def _send_one_packet(self, client_socket, packet: bytes, socket_lock=None) -> bool:
@@ -315,58 +317,61 @@ class Protocol:
 
         # Infinite loop to read packets
         while True:
-            received_data = client.recv(MAX_PACKET_SIZE)
-            if (int.from_bytes(received_data, 'big') <= 0):
-                # Socket disconnected
-                return 0
-            curr_msg_to_parse = left_over_packet + received_data
-            if (len(curr_msg_to_parse) < METADATA_LENGTH):
-                left_over_packet = curr_msg_to_parse
-            else:
-                # Keeps track of whether we should continue reading the next packet in this recv output
-                # Set to false if we don't have the whole packet yet and need to wait for the rest
-                continue_packet_iteration = True
+            try:
+                received_data = client.recv(MAX_PACKET_SIZE)
+                if (int.from_bytes(received_data, 'big') <= 0):
+                    # Socket disconnected
+                    return 0
+                curr_msg_to_parse = left_over_packet + received_data
+                if (len(curr_msg_to_parse) < METADATA_LENGTH):
+                    left_over_packet = curr_msg_to_parse
+                else:
+                    # Keeps track of whether we should continue reading the next packet in this recv output
+                    # Set to false if we don't have the whole packet yet and need to wait for the rest
+                    continue_packet_iteration = True
 
-                while continue_packet_iteration and len(curr_msg_to_parse) > METADATA_LENGTH:
-                    # Invariant here is that we at least have the metadata available
-                    packet_metadata = self.parse_metadata(curr_msg_to_parse)
-                    if packet_metadata.version != VERSION:
-                        return None
-                    else:
-                        # Read current packet's payload and add it to the running message
-                        curr_payload_size = packet_metadata.payload_size
-
-                        # Check if we have the whole packet
-                        if (len(curr_msg_to_parse[METADATA_LENGTH:]) < curr_payload_size):
-                            # We don't have the whole payload yet, so we need to wait to receive the next packet
-                            continue_packet_iteration = False
+                    while continue_packet_iteration and len(curr_msg_to_parse) > METADATA_LENGTH:
+                        # Invariant here is that we at least have the metadata available
+                        packet_metadata = self.parse_metadata(curr_msg_to_parse)
+                        if packet_metadata.version != VERSION:
+                            return None
                         else:
-                            # Whole packet available, parse payload size of the built up msg starting from after the metadata
-                            packet_to_parse = curr_msg_to_parse[METADATA_LENGTH:
-                                                                curr_payload_size + METADATA_LENGTH]
-                            incomplete_msg = packet_to_parse.decode(
-                                'ascii')
-                            # Check if this is a continuation of the current running message
-                            if (curr_msg_id == packet_metadata.message_id and curr_op == packet_metadata.operation_code):
-                                running_msg += incomplete_msg
+                            # Read current packet's payload and add it to the running message
+                            curr_payload_size = packet_metadata.payload_size
+
+                            # Check if we have the whole packet
+                            if (len(curr_msg_to_parse[METADATA_LENGTH:]) < curr_payload_size):
+                                # We don't have the whole payload yet, so we need to wait to receive the next packet
+                                continue_packet_iteration = False
                             else:
-                                # Else this is a new message
-                                running_msg = incomplete_msg
-                                curr_msg_id = packet_metadata.message_id
-                                curr_op = packet_metadata.operation_code
-                            # If running msg is done, then do something based on metadata
-                            if (running_msg[-1] == '\n'):
-                                message_processor(client, packet_metadata, running_msg[:-1],
-                                                  msg_id_accum)
-                                msg_id_accum += 1
-                                curr_msg_id = -1
-                                curr_op = -1
-                                running_msg = ''
-                            # Once we've processed the current packet, we want to set the curr_msg_to_parse
-                            # to be the rest of the received, and then continue iterating to process the rest of the packets
-                            curr_msg_to_parse = curr_msg_to_parse[curr_payload_size +
-                                                                  METADATA_LENGTH:]
-                left_over_packet = curr_msg_to_parse
+                                # Whole packet available, parse payload size of the built up msg starting from after the metadata
+                                packet_to_parse = curr_msg_to_parse[METADATA_LENGTH:
+                                                                    curr_payload_size + METADATA_LENGTH]
+                                incomplete_msg = packet_to_parse.decode(
+                                    'ascii')
+                                # Check if this is a continuation of the current running message
+                                if (curr_msg_id == packet_metadata.message_id and curr_op == packet_metadata.operation_code):
+                                    running_msg += incomplete_msg
+                                else:
+                                    # Else this is a new message
+                                    running_msg = incomplete_msg
+                                    curr_msg_id = packet_metadata.message_id
+                                    curr_op = packet_metadata.operation_code
+                                # If running msg is done, then do something based on metadata
+                                if (running_msg[-1] == '\n'):
+                                    message_processor(client, packet_metadata, running_msg[:-1],
+                                                    msg_id_accum)
+                                    msg_id_accum += 1
+                                    curr_msg_id = -1
+                                    curr_op = -1
+                                    running_msg = ''
+                                # Once we've processed the current packet, we want to set the curr_msg_to_parse
+                                # to be the rest of the received, and then continue iterating to process the rest of the packets
+                                curr_msg_to_parse = curr_msg_to_parse[curr_payload_size +
+                                                                    METADATA_LENGTH:]
+                    left_over_packet = curr_msg_to_parse
+            except:
+                return None
 
 
 protocol_instance = Protocol(VERSION, METADATA_SIZES)

@@ -2,12 +2,13 @@ import server
 import socket
 import threading
 import protocol
+import sys
+
 
 if __name__ == '__main__':
-    other_servers = [] #[('', 6001), ('', 6002)]
-    host = input(f'Enter host for this machine: ')
-    port = int(input(f'Enter port for this machine: '))
-    id = int(input(f'Enter id for this machine: '))
+    host = sys.argv[1]
+    port = int(sys.argv[2])
+    id = int(sys.argv[3])
     server = server.Server(
         host, port, protocol.protocol_instance, id)
     try:
